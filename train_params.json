@@ -1,0 +1,20 @@
+{
+  "train_params":{
+    "output_dir":"checkpoints-2.8B",
+    "batch_size":16,
+    "base_lr":1e-4,
+    "num_warmup_steps":2000,
+    "max_to_keep_save":12,
+    "checkpoint_per_hours":1,
+    "checkpoint_per_steps":10000
+  },
+  "model_params":{
+    "num_contexts":1280,
+    "num_layers":10,
+    "num_hidden":1024,
+    "num_header":16,
+    "use_moe":true,
+    "num_experts":16,
+    "num_pallarelizm":8
+  }
+}
