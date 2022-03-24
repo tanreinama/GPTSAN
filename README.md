@@ -207,6 +207,10 @@ Switch Transformerなので、計算資源さえあればパラメーター数�
 $ python run_generate.py --model my_checkpoint_dir --context "入力文章"
 ```
 
-資金がなく十分に学習した事前学習モデルが用意出来ないので、サンプルはお見せできません。どなたか代わりに学習させてやってください。
+現在、2021年度の「[異能vation](https://www.inno.go.jp/)」プログラムからの資金でもって、28億パラメーターのモデルの事前学習を行っています。
+
+学習が終わり次第、モデルをダウンロード出来るように公開する予定です。
+
+ただ、Swich Transformerとしてはパラメーター数が少ない（10Layers, 1024dim, 16experts）のと、Hybrid Model（hybrid_rate=0.08）しかないので、より大きなモデル＆Language Model/Masked Language Modelでのモデル作成を手伝って頂ける方を募集しています。
 
 また、AIベンチャー企業などを念頭に、プロジェクトを引き継いで頂ける方を募集しています。

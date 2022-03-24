@@ -48,7 +48,8 @@ def input_fn_builder(input_files,
                 batch_size=batch_size,
                 num_parallel_batches=num_cpu_threads,
                 drop_remainder=True))
-        return d
+        d = d.apply(tf.data.experimental.ignore_errors())
+        return d.repeat()
 
     return input_fn
 
