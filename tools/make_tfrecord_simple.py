@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import re
 import argparse
 import shutil
@@ -6,6 +7,7 @@ import os
 import json
 import pickle
 import uuid
+import glob
 import copy
 from multiprocessing import Pool
 import tensorflow as tf
@@ -13,21 +15,16 @@ import tensorflow as tf
 from encode_swe import SWEEncoder_ja as Encoder
 
 parser = argparse.ArgumentParser()
+parser.add_argument("--input_files", help="input text files (like 'data/*.txt' or csv or list file)", default="" )
 parser.add_argument("--mode", help="training mode ('lm' for language model, 'mlm' for masked language model, 'hybrid' for hybrid model)", default="lm" )
 parser.add_argument('--no_offset_mlm', help="no offset output for masked language model", action='store_true')
 parser.add_argument("--vocabulary", help="vocabulary file", default="ja-swe36k.txt" )
-parser.add_argument("--num_process", help="process num", type=int, default=32 )
+parser.add_argument("--num_process", help="process num", type=int, default=8 )
 parser.add_argument("--num_context", help="context token length", type=int, default=1280 )
-parser.add_argument("--num_separator", help="separator insertion rate", type=float, default=0.08 )
-parser.add_argument("--max_separator", help="max separator insertion num", type=int, default=8 )
 parser.add_argument("--num_mask", help="mask insertion rate for masked language model", type=float, default=0.08 )
 parser.add_argument("--max_mask", help="max mask insertion num", type=int, default=100 )
 parser.add_argument('--use_nextsent', help="use nextsentence training for masked language model", action='store_true')
-parser.add_argument("--nextsent_rate", help="train nextsentence rate", type=float, default=0.33 )
 parser.add_argument("--hybrid_rate", help="train hybrid mode vs lm mode in mode='hybrid'", type=float, default=1.0 )
-parser.add_argument("--data_per_file", help="num data per file", type=int, default=1000000 )
-parser.add_argument('--restore_last', action='store_true')
-parser.add_argument('--test', action='store_true')
 args = parser.parse_args()
 
 with open(args.vocabulary, encoding='utf-8') as f:
@@ -55,81 +52,37 @@ KIGOU_TOKEN = enc.encode("〜×÷¥！＂＃＄％＆＇（）＊＋，－．／
 TOKEN_IS_KIGOU = [(t in KIGOU_TOKEN) for t in range(NUM_TOKENS)]
 
 assert args.mode in ["lm","mlm","hybrid"], "invalid mode"
+assert args.input_files != "", "empty input files"
 
-if args.restore_last:
-    start = 0
-    end = args.data_per_file
-    files = os.path.listdir(".")
-    while True:
-        isfile = False
-        for f in files:
-            if f.startswith("%s_restore_0_%d-"%(args.mode,start)) and f.endswith(".json"):
-                isfile = True
-        if not isfile:
-            break
-        else:
-            start += args.data_per_file
-            end += args.data_per_file
-    text_files = []
-    text_file_pos = []
-    output_start = 0
-    if start != 0:
-        start -= args.data_per_file
-        end -= args.data_per_file
-        output_start = end
-    for i in range(args.num_process):
-        assert os.path.isfile("%s_restore_%d_%d-%d.json"%(args.mode,i,start,end)), "restore file not found"
-        with open("%s_restore_%d_%d-%d.json"%(args.mode,i,start,end)) as f:
-            j = json.loads(f.read())
-            text_files.extend(j["files"])
-            text_file_pos.extend(j["tell"])
-
-else:
-    array_file = []
-    if args.test:
-        array_file.extend([("sep/"+f,False,os.path.getsize("sep/"+f)) for f in os.listdir("sep")])
-        array_file.extend([("nosep/"+f,True,os.path.getsize("nosep/"+f)) for f in os.listdir("nosep")])
+if os.path.isfile(args.input_files):
+    head = open(args.input_files).readline().strip()
+    if head=="filename,fileid":
+        df = pd.read_csv(args.input_files)
+        array_file = list(df.filename)
+        file_id = {k:int(v) for k,v in zip(df.filename,df.fileid)}
+    elif head.split()==2 and os.path.isfile(d.split()[0]):
+        df = open(args.input_files).readlines()
+        df = [d.split() for d in df]
+        array_file = [d[0] for d in df]
+        file_id = {d[0]:int(d[1].strip()) for d in df}
+    elif os.path.isfile(head):
+        df = open(args.input_files).readlines()
+        array_file = [d.split() for d in df]
+        file_id = None
     else:
-        src_dir  = ["C4/","CC100/","extra_content/"]
-        for dir in src_dir:
-            if os.path.isdir(dir):
-                array_file.extend([(dir+f,False,os.path.getsize(dir+f)) for f in os.listdir(dir)])
-        src_dir  = ["corpus2010/"]
-        for dir in src_dir:
-            if os.path.isdir(dir):
-                array_file.extend([(dir+f,True,os.path.getsize(dir+f)) for f in os.listdir(dir)])
+        assert False, "valid input list file"
+else:
+    array_file = glob.glob(args.input_files)
+    file_id = None
+assert len(array_file) > 0, "input file number is 0"
 
-    np.random.shuffle(array_file)
-    np.random.shuffle(array_file)
-    np.random.shuffle(array_file)
+np.random.shuffle(array_file)
 
-    text_indexs = np.array_split(np.arange(len(array_file)), args.num_process)
-    text_files = [[array_file[i] for i in p] for p in text_indexs]
-    text_file_pos = [[0] * len(text_files[i]) for i in range(args.num_process)]
-    output_start = 0
+text_indexs = np.array_split(np.arange(len(array_file)), args.num_process)
+text_files = [[array_file[i] for i in p] for p in text_indexs]
 
-    proc = True
-    while proc:
-        trainsize = [np.sum([f[2] for f in t]) for t in text_files]
-        maxindex = np.argmax(trainsize)
-        minindex = np.argmin(trainsize)
-        minofmax = np.min([f[2] for f in text_files[maxindex]])
-        proc = trainsize[maxindex] - minofmax > trainsize[minindex]
-        if proc:
-            minofmaxidx = np.argmin([f[2] for f in text_files[maxindex]])
-            text_files[minindex].append(text_files[maxindex].pop(minofmaxidx))
-            np.random.shuffle(text_files[minindex])
-
-def _append(i, tokens, target, nextsent, num_input, nextsent_target, isfilesep):
+def _append(i, tokens, target, nextsent, num_input, nextsent_target):
     tokens, target, nextsent = copy.copy(tokens), copy.copy(target), copy.copy(nextsent)
-
-    if not isfilesep:
-        n = max(int(args.num_separator * len(target)), args.max_separator)
-        positions = np.random.permutation(len(tokens) - 1 - num_input)
-        for p in positions[:n]:
-            if tokens[p+1+num_input] < SOT_TOKEN:
-                tokens.insert(p+1+num_input, SEP_TOKEN)
-                target.insert(p, NOT_TOKEN)
 
     lm_targetlen = len(target)
     tokens = [SOT_TOKEN] + nextsent + tokens
@@ -182,6 +135,7 @@ def _append(i, tokens, target, nextsent, num_input, nextsent_target, isfilesep):
     features = {
         "x":tf.train.Feature(int64_list=tf.train.Int64List(value=tokens)),
         "y":tf.train.Feature(int64_list=tf.train.Int64List(value=target)),
+        "i":tf.train.Feature(int64_list=tf.train.Int64List(value=[i])),
         "num_input":tf.train.Feature(int64_list=tf.train.Int64List(value=[end_input]))
     }
     example = tf.train.Example(features=tf.train.Features(feature=features))
@@ -218,39 +172,30 @@ def _target(token):
     encoded_token = [(e if not TOKEN_IS_DOT[e] else SEP_TOKEN) for e in encoded_token]
     return encoded_token, target_token
 
-def _checkpoint(i, filename, fileend, p, n=args.data_per_file):
-    start = output_start
-    end = output_start + n
-    with open("%s_restore_%d_%d-%d.json"%(args.mode,i,start,end), "w") as wf:
-        wf.write(json.dumps({"files":filename, "tell":p, "completed":fileend}))
-
 def _proc(i):
     np.random.seed(i)
-    filep = [open(f[0]) for f in text_files[i]]
+    filep = [None for f in text_files[i]]
     filename = [f for f in text_files[i]]
     fileend = []
-    filesep = [f[1] for f in text_files[i]]
     filesize = [f[2] for f in text_files[i]]
-    for fp, rp in zip(filep, text_file_pos[i]):
-        fp.seek(rp)
     num_write_data = 0
-    with tf.io.TFRecordWriter("%s_%s_%d_%d-%d.tfrecord"%(args.mode,"test" if args.test else "train",i,output_start,output_start + args.data_per_file)) as writer:
+    with tf.io.TFRecordWriter("%s_%04d.tfrecord"%(args.mode,i)) as writer:
         while len(filep) > 0:
-            weight = np.array(filesize) / np.sum(filesize)
-            pos = np.random.choice(np.arange(len(filep)), p=weight)
+            pos = np.random.choice(np.arange(len(filep)))
+            if filep[pos] is None:
+                filep[pos] = open(filename[pos])
             line = filep[pos].readline()
-            isfilesep = filesep[pos]
             hybrid_lm = np.random.random() >= args.hybrid_rate
             if not line:
                 filep[pos].close()
                 filep.pop(pos)
                 fileend.append(filename.pop(pos))
-                filesep.pop(pos)
                 filesize.pop(pos)
             else:
-                isnextsent = (np.random.random() < args.nextsent_rate) and args.use_nextsent and args.mode != 'lm' and (args.mode != 'hybrid' or not hybrid_lm)
+                isnextsent = args.use_nextsent and args.mode != 'lm' and (args.mode != 'hybrid' or not hybrid_lm)
                 nextsenttoken = []
                 nextsent_target = -1
+                appendid = -1
                 if isnextsent:
                     if np.random.random() < 0.5:
                         nextsent = line
@@ -258,49 +203,22 @@ def _proc(i):
                         if line:
                             nextsent_target = 1
                         else:
-                            while not line:
-                                filep[pos].close()
-                                filep.pop(pos)
-                                fileend.append(filename.pop(pos))
-                                filesep.pop(pos)
-                                filesize.pop(pos)
-                                if len(filep) == 0:
-                                    break
-                                weight = np.array(filesize) / np.sum(filesize)
-                                pos = np.random.choice(np.arange(len(filep)), p=weight)
-                                isfilesep = filesep[pos]
-                                line = filep[pos].readline()
-                            nextsent_target = 0
-                            if not line or len(filep) == 0:
-                                break
+                            line = nextsent
+                            isnextsent = False
+                            nextsenttoken = []
+                            nextsent_target = -1
                     else:
-                        anotherweight = [(0 if i==pos else filesize[i]) for i in range(len(filesize))]
-                        if len(anotherweight) != 1:
-                            anotherweight = np.array(anotherweight) / np.sum(anotherweight)
-                            anotherpos = np.random.choice(np.arange(len(filep)), p=anotherweight)
-                        else:
-                            anotherpos = pos
-                            nextsent_target = 1
+                        anotherpos = np.random.choice(np.arange(len(filep)))
+                        if filep[anotherpos] is None:
+                            filep[anotherpos] = open(filename[anotherpos])
                         nextsent = filep[anotherpos].readline()
-                        while not nextsent:
-                            filep[anotherpos].close()
-                            filep.pop(anotherpos)
-                            fileend.append(filename.pop(anotherpos))
-                            filesep.pop(anotherpos)
-                            filesize.pop(anotherpos)
-                            if len(filep) == 0:
-                                break
-                            anotherweight = [(0 if i==pos else filesize[i]) for i in range(len(filesize))]
-                            anotherweight = np.array(anotherweight) / np.sum(anotherweight)
-                            anotherpos = np.random.choice(np.arange(len(filep)), p=anotherweight)
-                            nextsent = filep[anotherpos].readline()
-                        if len(filep) == 0:
-                            break
                         nextsent_target = 0
                         if not nextsent:
                             isnextsent = False
                             nextsenttoken = []
                             nextsent_target = -1
+                        filep[anotherpos].close()
+                        filep[anotherpos] = None
 
                     if isnextsent:
                         nextsenttoken = enc.encode(nextsent.strip(), clean=True)
@@ -310,7 +228,6 @@ def _proc(i):
 
                 cur_token = []
                 cur_target = []
-                iswrote = False
                 if args.mode == 'lm':
                     num_input = 0
                 elif args.mode == 'mlm':
@@ -319,27 +236,13 @@ def _proc(i):
                     num_input = 0 if hybrid_lm else np.random.randint(NUM_CTX-len(nextsenttoken)-2)
                 else:
                     assert False, 'imvalid mode'
-                while line and len(filesep)>0:
+                while line:
                     line = line.replace('\r\n','\n')
                     line = line.replace('\r','\n')
-                    if line == '\n' or len(line.strip())==0:
-                        if len(cur_token) > num_input:
-                            writer.write(_append(i, cur_token, cur_target, nextsenttoken, num_input, nextsent_target, isfilesep))
-                            writer.flush()
-                            num_write_data += 1
-                            if num_write_data >= args.data_per_file:
-                                _checkpoint(i, filename, fileend, [f.tell() for f in filep])
-                                print(f"process {i} wrote {num_write_data} datas")
-                                return
-                            iswrote = True
-                            break
 
                     if len(cur_token) < num_input:
                         encoded_token = enc.encode(line.strip(), clean=False)
-                        if filesep[pos]:
-                            encoded_token.append(SEP_TOKEN)
-                        else:
-                            encoded_token.append(NL_TOKEN)
+                        encoded_token.append(NL_TOKEN)
                         if len(cur_token)+len(encoded_token) < num_input:
                             cur_token.extend(encoded_token)
                         else:
@@ -356,45 +259,31 @@ def _proc(i):
                         encoded_token, target_token = _target(encoded_token)
                         assert len(encoded_token) == len(target_token), "target len mismatch"
 
-                        encoded_token.append(SEP_TOKEN)
-                        target_token.append(SEP_TOKEN if filesep[pos] else NL_TOKEN)
+                        encoded_token.append(NL_TOKEN)
+                        target_token.append(NL_TOKEN)
 
                         cur_token.extend(encoded_token)
                         cur_target.extend(target_token)
                         assert (len(cur_token) - num_input) == (len(cur_target) + 1), "num_target mismatch"
 
                     if len(cur_token) >= NUM_CTX-len(nextsenttoken):
-                        writer.write(_append(i, cur_token, cur_target, nextsenttoken, num_input, nextsent_target, isfilesep))
-                        writer.flush()
-                        num_write_data += 1
-                        if num_write_data >= args.data_per_file:
-                            _checkpoint(i, filename, fileend, [f.tell() for f in filep])
-                            print(f"process {i} wrote {num_write_data} datas")
-                            return
-                        iswrote = True
+                        appendid = file_id[filename[pos]] if file_id is not None else (num_write_data*args.num_process + i)
                         break
 
                     line = filep[pos].readline()
                     if not line:
+                        appendid = file_id[filename[pos]] if file_id is not None else (num_write_data*args.num_process + i)
                         filep[pos].close()
                         filep.pop(pos)
                         fileend.append(filename.pop(pos))
-                        filesep.pop(pos)
                         filesize.pop(pos)
+                        break
 
-                if len(cur_token) > num_input and not iswrote:
+                if len(cur_token) > num_input:
                     assert (len(cur_token) - num_input) == (len(cur_target) + 1), "ending mismatch"
-                    writer.write(_append(i, cur_token, cur_target, nextsenttoken, num_input, nextsent_target, isfilesep))
+                    writer.write(_append(appendid, cur_token, cur_target, nextsenttoken, num_input, nextsent_target))
                     writer.flush()
                     num_write_data += 1
-                    if num_write_data >= args.data_per_file:
-                        _checkpoint(i, filename, fileend, [f.tell() for f in filep])
-                        print(f"process {i} wrote {num_write_data} datas")
-                        return
-    _checkpoint(i, filename, fileend, [f.tell() for f in filep], num_write_data)
-    if num_write_data != args.data_per_file:
-        shutil.move("%s_%s_%d_%d-%d.tfrecord"%(args.mode,"test" if args.test else "train",i,output_start,output_start + args.data_per_file),
-                    "%s_%s_%d_%d-%d.tfrecord"%(args.mode,"test" if args.test else "train",i,output_start,output_start + num_write_data))
     print(f"process {i} wrote {num_write_data} datas and complete epoch")
 
 with Pool(args.num_process) as p:

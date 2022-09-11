@@ -1,3 +1,5 @@
--e "git+https://github.com/tensorflow/mesh.git#egg=mesh-tensorflow"
-ortools
 tensorflow_datasets
+ortools
+-e "git+https://github.com/tensorflow/mesh.git#egg=mesh-tensorflow"
+tqdm
+pandas

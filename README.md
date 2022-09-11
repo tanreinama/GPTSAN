@@ -1,216 +1,77 @@
 # GPTSAN
 
-
-
-汎用大規模日本語Switch Transformerモデル
-
-
-
-![model](report/model-type.png)
-
+![model](report/logo-bk.png)
 
 
 # GPTSANとは
 
-なんにでも使える汎用日本語言語モデルを目指して作成した、Swich Transformerモデルの学習＆文章生成のコードです。
+なんにでも使える汎用日本語言語モデルを目指して作成したSwich Transformerモデルです。
 
-テキストエンコードは独自のByte-Pairモデルを使用します。Swich Transformerなのでパラメーター数を容易にスケールできます。
-
-# 学習
+特徴として、[1-GPUでファインチューニング可能](report/finetune.md#gpu)だったり、[生成文章のクラスを指定可能](report/finetune.md#sqout)だったりします。
 
 
-
-## モデルの種類
-
-GPTSANでは、異なる4種類の事前学習をサポートします（[こちら](report/model-type.png)の図を参照）。
-
-Language ModelはGPTと同じで、Transformerは情報を後ろのみへと伝播させるDecoderモデルに、一つ前にずれたトークン列を学習させます。
-
-Masked Language ModelはBERTと同じで、Encoderモデルに文章の一部分をマスクした入力を与え、マスク部分のトークンのみを学習させます。
-
-Hybrid Modelは、[T5](https://arxiv.org/abs/1910.10683)の論文で「Prefix LM」と紹介されている、Transformerの前半がEncoder、後半がDecoderとなっているモデルに、マスクと言語モデルの両方を学習させます。Encoder部分の長さは可変で、事前学習の際にはランダムな長さをEncoderの入力とします。
-
-[T5](https://arxiv.org/abs/1910.10683)の論文によると、ObjectiveをLanguage Modelとした時の最も良いモデルはPrefix LMであるとされているため、文章の続きを生成するタスクや、抽象型要約などにはHybrid Modelが望ましいと考えられます。Language Modelは文章生成、Masked Language Modelは抽出型要約などのタスクのベースモデルとして使用しますが、Hybrid Modelならばどちらのタスクにも利用できます。
+# モデルのダウンロード
 
 
+現在、28億パラメーター（10layer-1024ch-16header-16experts-1280contexts）のモデルが公開されています。
 
-## 学習データの作成
-
-事前学習には、500GiBほどの日本語コーパスが必要になります。
-
-ここでは、[C4](https://huggingface.co/datasets/allenai/c4)、[CC100](http://data.statmt.org/cc-100)、[NWC 2010](http://www.s-yata.jp/corpus/nwc2010/)を利用する方法を紹介します。
-
-**C4のダウンロード**
-
-・git-lfsをダウンロード
+[こちら](https://drive.google.com/drive/folders/1ci17cB4StbXTAmiJ2VaN8hHIqU3Aj2Y8)のGoogle Driveフォルダから、モデルをダウンロードし、以下のコマンドで解凍します。
 
 ```sh
-$ curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | sudo bash
-$ sudo apt-get install git-lfs
+$ tar xfj GPTSAN-2.8B-spout_is_uniform.tar.bz2
 ```
 
-・huggingfaceのGitHubから日本語コーパスをClone
+# とりあえず使ってみる
+
+文章生成。
 
 ```sh
-$ mkdir C4; cd C4
-$ GIT_LFS_SKIP_SMUDGE=1 git clone https://huggingface.co/datasets/allenai/c4
-$ cd c4
-$ git lfs pull --include "multilingual/c4-ja-validation*.json.gz"
-$ cd ../..
+$ python run_generate.py --model GPTSAN-2.8B-spout_is_uniform/ --context "武田信玄は、戦国 時代ファンならぜひ押さえておきたい名将の一人。天下統一を目指し勢いに乗る織田信長からも、一目置かれていたと"
 ```
 
-・展開
+## 生成オプション
+
+### Top_K
+
+「--top_k」で指定可能。変えると割と変わる。
 
 ```sh
-$ cd C4/c4/multilingual
-$ python
->>> import json,uuid,gzip
->>> wf, wc = open('../../'+str(uuid.uuid4())+'.txt','w'), 0
->>> for i in range(8):
-...     for l in gzip.open('c4-ja-validation.tfrecord-0000%d-of-00008.json.gz'%i).readlines():
-...         wc += wf.write(json.loads(l)['text'].strip() + '\n\n')
-...         if wc > 1000 * 1000 * 200:
-...             wf.close()
-...             wf, wc = open('../../'+str(uuid.uuid4())+'.txt','w'), 0
-...
->>> wf.close()
-^D
-$ cd ../../..
-$ rm -rf C4/c4/
+$ python run_generate.py --model GPTSAN-2.8B-spout_is_uniform/ --context "武田信玄は、戦国 時代ファンならぜひ押さえておきたい名将の一人。天下統一を目指し勢いに乗る織田信長からも、一目置かれていたと" --top_k 100
 ```
 
-**CC100のダウンロード**
+### 最大生成文字数
 
-・ダウンロード
+「--max_generate」で指定可能。小さくすると速く動く。
 
 ```sh
-$ mkdir CC100; cd CC100
-$ wget http://data.statmt.org/cc-100/ja.txt.xz
+$ python run_generate.py --model GPTSAN-2.8B-spout_is_uniform/ --context "武田信玄は、戦国 時代ファンならぜひ押さえておきたい名将の一人。天下統一を目指し勢いに乗る織田信長からも、一目置かれていたと" --max_generate 100
 ```
 
-・展開
+### 検索木の枝数
+
+「--beam_width」で指定可能。小さくすると速く動く。
 
 ```sh
-$ unxz ja.txt.xz
-$ python
->>> import uuid
->>> f = open("ja.txt")
->>> wf, wc = open(str(uuid.uuid4()),"w"), 0
->>> l = f.readline()
->>> while l:
-...     if l == '\n' and wc > 1000 * 1000 * 200:
-...         wf.close()
-...         wc = 0
-...         wf = open(str(uuid.uuid4()),"w")
-...     else:
-...         wc += wf.write(l)
-...     l = f.readline()
-...
->>> wf.close()
-^D
-$ rm ja.txt
-$ cd ..
+$ python run_generate.py --model GPTSAN-2.8B-spout_is_uniform/ --context "武田信玄は、戦国 時代ファンならぜひ押さえておきたい名将の一人。天下統一を目指し勢いに乗る織田信長からも、一目置かれていたと" --beam_width 1
 ```
 
-**NWC 2010のダウンロード**
 
-[NWC 2010](http://www.s-yata.jp/corpus/nwc2010/)のホームページからコーパスの利用をリクエストしダウンロードURLを発行して貰ったら、すべてダウンロードして「corpus2010」というディレクトリに展開します。
+# ファインチューニング
 
-**その他のコーパス**
+1-GPUでファインチューニングな大規模言語モデル。
 
-その他のコーパス（Wikipedia全文コーパスなど）があれば、「extra_content」というディレクトリに配置します。
-
-ファイル数が多くなりすぎないように、空行で文章の区切りとなるようにして、1つあたり数百MB程度のテキストファイルにまとめておきます。
+[ファインチューニング方法](report/finetune.md)
 
 
+# 言語モデルとして実行
 
-## tfrecordファイルの作成
+テキスト穴埋め問題をBERT風に解く。
 
-[NWC 2010](http://www.s-yata.jp/corpus/nwc2010/)のコーパスには文章の区切りがなく、\<endoftext\>を作成出来ません。そこで、\<SEP\>トークンを特殊トークン（句読点またはEOT）として扱います。学習時には[NWC 2010](http://www.s-yata.jp/corpus/nwc2010/)のコーパスのみ\<SEP\>トークン区切りとし、文章の生成時に\<SEP\>が出現したら、句読点かEOTのどちらか可能性の高い方を採用します。
-
-また、\<bagoftoken\>という特殊トークンがあります。これは、同じトークンが連続して3つ以上出現したときは、対象トークン＋\<BAG\>とエンコードするためのものです。それにより、「・・・・・」のような頻繁に出現する繰り返しを、延々と出力する動作を防ぎます。
-
-コーパスのテキストを配置したら、```make_tfrecord.py```でtfrecorfファイルを作成します。
-
-```sh
-$ make_tfrecord.py --num_process 32
-```
-
-どの種類のモデルとして学習させるかは、tfrecordファイルを作成する時に指定します。
-
-Hybrid Modelとして学習させるのであれば、```---mode hybrid```を付けます。
-
-```sh
-$ make_tfrecord.py --num_process 32 --mode hibrid
-```
-
-Language Modelとして学習させつつ、何割かはHybrid Modelとして学習させる（LMとHybridとのハイブリッド）事も出来ます。
-
-```sh
-$ make_tfrecord.py --num_process 32 --mode hibrid --hybrid_rate 0.5
-```
-
-その他、```--mode lm```でLanguage Model、```--mode mlm```でMasked Language Model（Shifted）、```--mode mlm --no_offset_mlm```でMasked Language Model（No-Shifted）となります。
+[Masked Language Modelを実行](report/model.md#mlm)
 
 
+# 文章のベクトル化
 
-## 学習
+内部層の情報も含んだ文章ベクトル生成。
 
-学習にはTPUを使います。
-
-[Google Cloud TPU](https://cloud.google.com/tpu/docs/)のドキュメントを参考に、TPUとGCEインスタンスを作成し、TPUのサービスアカウントにはバケットへのアクセス権限のIAMを作成します。
-
-TensorFlowのバージョンは1系でも2系でも動作しますが、学習時には1系の方がほんの少しだけ高速です。
-
-次に、作成したtfrecordファイルをGCSのバケットにアップロードし、モデルの保存場所となるバケットを作成したら、```run_pretraining.py```を起動します。
-
-```sh
-$ run_pretraining.py --use_bfloat16 --tpu_nodes my-tpu-node-name --input_files gs://my-backet-name/*.tfrecord
-```
-
-学習モデルのパラメーターは、```train_params.json```で指定します。モデルの保存先も```train_params.json```に記載しておきます。
-
-```json
-{
-  "train_params":{
-    "output_dir":"gs://my-backet-name/checkpoints-2.8B",
-    "batch_size":16,
-    "base_lr":1e-4,
-    "num_warmup_steps":2000,
-    "max_to_keep_save":12,
-    "checkpoint_per_hours":1,
-    "checkpoint_per_steps":10000
-  },
-  "model_params":{
-    "num_contexts":1280,
-    "num_layers":10,
-    "num_hidden":1024,
-    "num_header":16,
-    "use_moe":true,
-    "num_experts":16,
-    "num_pallarelizm":8
-  }
-}
-```
-
-TPU V3-8が1個では、28億パラメーター程度が限界です。500GiB×1エポックで96日くらいかかります。
-
-Switch Transformerなので、計算資源さえあればパラメーター数は容易に増やす事が出来ます。手元に余っているスーパーコンピュータをお持ちの方は、是非とも1000億パラメータークラスのモデル作成に挑戦してみてください。
-
-# 文章生成
-
-文章生成プログラムは、今のところGPU上でのみ動作確認しています。TensorFlowのバージョン2系で動作します。
-
-文章生成を行うには、```run_generate.py```を使用します。
-
-```sh
-$ python run_generate.py --model my_checkpoint_dir --context "入力文章"
-```
-
-現在、2021年度の「[異能vation](https://www.inno.go.jp/)」プログラムからの資金でもって、28億パラメーターのモデルの事前学習を行っています。
-
-学習が終わり次第、モデルをダウンロード出来るように公開する予定です。
-
-ただ、Swich Transformerとしてはパラメーター数が少ない（10Layers, 1024dim, 16experts）のと、Hybrid Model（hybrid_rate=0.08）しかないので、より大きなモデル＆Language Model/Masked Language Modelでのモデル作成を手伝って頂ける方を募集しています。
-
-また、AIベンチャー企業などを念頭に、プロジェクトを引き継いで頂ける方を募集しています。
+[任意のトークン位置からステータスを抽出](report/model.md#vectorize)

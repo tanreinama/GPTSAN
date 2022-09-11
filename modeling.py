@@ -4,7 +4,10 @@ import tensorflow.compat.v1 as tf
 import mesh_tensorflow as mtf
 from mesh_tensorflow.auto_mtf.api import layout as auto_layout
 from mesh_tensorflow.transformer import moe as moe_lib
-import optimization as optimization_lib
+try:
+    import optimization as optimization_lib
+except:
+    pass
 
 import mesh_tensorflow.optimize as mtf_optimize
 
@@ -13,11 +16,12 @@ tf.enable_eager_execution()
 
 def model(tpu, params, train_params, is_training, use_bfloat, use_mixed_precision):
     num_contexts = train_params["model_params"]["num_contexts"]
-    num_layers = train_params["model_params"]["num_layers"]
+    num_switch_layers = train_params["model_params"]["num_switch_layers"]
+    num_ext_layers = train_params["model_params"]["num_ext_layers"]
+    num_layers = num_switch_layers + num_ext_layers
     num_hidden = train_params["model_params"]["num_hidden"]
     num_header = train_params["model_params"]["num_header"]
     num_vocabulary = train_params["model_params"]["num_vocabulary"]
-    use_moe = train_params["model_params"]["use_moe"]
     num_experts = train_params["model_params"]["num_experts"]
     num_pallarelizm = train_params["model_params"]["num_pallarelizm"]
 
@@ -46,16 +50,18 @@ def model(tpu, params, train_params, is_training, use_bfloat, use_mixed_precisio
             mesh_shape.to_integer_list, physical_shape)
         mesh_impl = mtf.simd_mesh_impl.SimdMeshImpl(
             mesh_shape, layout_rules, [""]*mesh_shape.size, ctx.device_assignment, logical_to_physical)
+        tf.logging.info("device_list =" + str(device_list))
     else:
+        moe_mesh_shape = None
         num_repricates = len(tf.config.experimental.list_physical_devices('GPU'))
+        assert num_repricates>=num_pallarelizm and num_repricates%num_pallarelizm==0, f"num_pallarelizm can not divid num_repricates {num_repricates}"
         mesh_shape = mtf.Shape([("batch", num_repricates//num_pallarelizm),("model", num_pallarelizm)])
         layout_rules = [('batch', 'batch'),('header', 'model'),('experts', 'model')]
         device_list = ["/device:gpu:%d"%i for i in range(num_repricates)]
         mesh = mtf.Mesh(graph, "mesh")
         mesh_impl = mtf.placement_mesh_impl.PlacementMeshImpl(
             mesh_shape, layout_rules, device_list)
-
-    tf.logging.info("device_list =", device_list)
+        tf.logging.info("device_list =" + ",".join(device_list))
 
     fret_dtype = tf.float16 if use_mixed_precision else tf.float32
     dense_dtype = tf.bfloat16 if (is_training and use_bfloat) else fret_dtype
@@ -86,7 +92,7 @@ def model(tpu, params, train_params, is_training, use_bfloat, use_mixed_precisio
             predictions=predictions,
             prediction_hooks=[restore_hook])
 
-    def train_fn(results, y, train_params):
+    def train_fn(results, y, train_params, ignore_names=[], clip_gradients=False):
         num_batch = y.get_shape().as_list()[0]
         dim_batch = mtf.Dimension("batch", num_batch)
         num_input_contexts = y.get_shape().as_list()[1]
@@ -122,7 +128,7 @@ def model(tpu, params, train_params, is_training, use_bfloat, use_mixed_precisio
             for i in s:
                 d *= i
             num_params += d
-        tf.logging.info("num_params =",num_params)
+        tf.logging.info("num_params = %d"%num_params)
 
         _, update_ops = optimization_lib.create_optimizer(
             loss + extra_loss,
@@ -130,7 +136,8 @@ def model(tpu, params, train_params, is_training, use_bfloat, use_mixed_precisio
             num_warmup_steps,
             optimizer="adam",
             grad_scale=2**9 if use_mixed_precision else 1.0,
-            clip_gradients=False)
+            clip_gradients=clip_gradients,
+            ignore_names=ignore_names)
 
         outputs = (output, present, logits, vector)
 
@@ -167,7 +174,7 @@ def model(tpu, params, train_params, is_training, use_bfloat, use_mixed_precisio
             training_hooks=[restore_hook, saver_hook])
         return res
 
-    def model_fn(x, num_precontext=None, pos_vector=None, pasts=None):
+    def model_fn(x, num_precontext=None, pos_vector=None, pasts=None, spout=None):
         assert x.shape.ndims == 2  # x Should be [batch, sequence]
         num_batch = x.get_shape().as_list()[0]
         dim_batch = mtf.Dimension("batch", num_batch)
@@ -178,10 +185,11 @@ def model(tpu, params, train_params, is_training, use_bfloat, use_mixed_precisio
         num_pasts_contexts = 0
         if pasts is not None:
             num_pasts_contexts = pasts.get_shape().as_list()[4]
+        elif spout is not None:
+            num_pasts_contexts = 1
         num_output_contexts = num_input_contexts+num_pasts_contexts
         dim_output_contexts = mtf.Dimension("memory_contexts", num_output_contexts)
         pasts_dims = [dim_batch, dim_layers, dim_keyvalue, dim_header, mtf.Dimension("memory_contexts", num_pasts_contexts), dim_kernel]
-        presents_dims = [dim_batch, dim_layers, dim_keyvalue, dim_header, dim_output_contexts, dim_kernel]
 
         x = mtf.import_tf_tensor(mesh, x, [dim_batch, dim_input_contexts])
         if num_precontext is not None:
@@ -191,6 +199,30 @@ def model(tpu, params, train_params, is_training, use_bfloat, use_mixed_precisio
             num_precontext = tf.zeros([num_batch])
         if pasts is not None:
             pasts = mtf.import_tf_tensor(mesh, pasts, pasts_dims)
+        elif spout is not None:
+            num_spout = spout.get_shape().as_list()[1]
+            dim_spout = mtf.Dimension("dim_spout", num_spout)
+            dim_ext_outputs = mtf.Dimension("extinp_outputs", num_layers*2*num_hidden)
+            dim_ext_context = mtf.Dimension("memory_contexts", num_pasts_contexts)
+            p = mtf.import_tf_tensor(mesh, spout, [dim_batch, dim_spout])
+            with tf.variable_scope('pasts'):
+                for n_spout in range(8):
+                    p = mtf.layers.dense(
+                        p, reduced_dims=[dim_spout],
+                        new_dims=[dim_spout],
+                        activation=mtf.tanh,
+                        kernel_initializer=tf.random_normal_initializer(stddev=0.01),
+                        name="mlp%d"%n_spout, use_bias=False,
+                        variable_dtype=variable_dtype)
+                pasts = mtf.layers.dense(
+                    p, reduced_dims=[dim_spout],
+                    new_dims=[dim_ext_outputs],
+                    kernel_initializer=tf.random_normal_initializer(stddev=0.01),
+                    name="out", use_bias=False,
+                    variable_dtype=variable_dtype)
+            pasts = mtf.reshape(pasts, [dim_batch, dim_layers, dim_keyvalue, dim_header, dim_ext_context, dim_kernel])
+            pasts = mtf.cast(pasts, dense_dtype)
+
         if pos_vector is not None:
             pos_vector = mtf.import_tf_tensor(mesh, tf.reshape(pos_vector, [-1]), [dim_batch])
 
@@ -236,7 +268,6 @@ def model(tpu, params, train_params, is_training, use_bfloat, use_mixed_precisio
                 # present shuld be [batch, 2, heads, sequence, hidden]
 
                 if past is not None:
-                    target_dim = presents_dims[4]
                     pk, pv = mtf.unstack(past, dim_keyvalue)
                     # pk, pv shuld be [batch, heads, sequence, hidden]
                     key = mtf.concat([pk, key], "memory_contexts")
@@ -365,21 +396,29 @@ def model(tpu, params, train_params, is_training, use_bfloat, use_mixed_precisio
 
             atten_mask = make_attention_mask(num_input_contexts, num_output_contexts, num_precontext)
 
+            if num_ext_layers > 0:
+                ete = mtf.get_variable(mesh, 'ete', mtf.Shape([dim_contexts, dim_hidden]),
+                                     initializer=tf.zeros_initializer(), dtype=tf.float32)
+                ete = mtf.gather(ete, pos, dim_contexts)
+
             extra_loss = []
             extra_vector = []
             for layer, past in enumerate(pasts):
+                if layer == num_switch_layers:
+                    x = mtf.cast(x, tf.float32) + ete
+                    x = mtf.cast(x, dense_dtype)
+
                 h, present = multiheadattention(x, 'att%d'%layer, num_header, mask=atten_mask, past=past)
                 x = normalization(h, 'an%d'%layer) + x
-                if use_moe:
+                if layer < num_switch_layers:
                     h, exloss = moe(x, 'moe%d'%layer)
                     extra_loss.append(exloss)
                 else:
                     h = mlp(x, 'mlp%d'%layer)
                 x = normalization(h, 'ln%d'%layer) + x
                 presents.append(present)
-                if (layer+1+num_layers%4) % (num_layers // 4) == 0:
-                    if pos_vector is not None:
-                        extra_vector.append(mtf.gather(x, pos_vector, dim_input_contexts))
+                if pos_vector is not None:
+                    extra_vector.append(mtf.gather(x, pos_vector, dim_input_contexts))
 
             extra_loss = None if len(extra_loss) == 0 else mtf.cast(mtf.add_n(extra_loss), tf.float32)
             present = mtf.stack(presents, "memory_layers", 1)
@@ -399,7 +438,6 @@ def model(tpu, params, train_params, is_training, use_bfloat, use_mixed_precisio
 
             if pos_vector is not None:
                 vector = mtf.concat(extra_vector, 'hidden')
-                vector = mtf.reshape(vector, [dim_batch, dim_vector])
             else:
                 vector = None
 

@@ -89,7 +89,8 @@ def create_optimizer(loss, base_lr, num_warmup_steps,
                      max_optimized_variable_size=None,
                      optimizer="adam",
                      grad_scale=1.0,
-                     clip_gradients=True):
+                     clip_gradients=True,
+                     ignore_names=None):
     """Creates an optimizer training op."""
     global_steps = tf.train.get_or_create_global_step()
     mesh = loss.mesh
@@ -129,6 +130,11 @@ def create_optimizer(loss, base_lr, num_warmup_steps,
     if max_optimized_variable_size:
         trainable_variables = [t for t in trainable_variables
                                      if t.shape.size <= max_optimized_variable_size]
+    if ignore_names is not None:
+        trainable_variables = [t for t in trainable_variables
+                                     if str(t.name) not in ignore_names]
+        tf.logging.info("ignore_names = " + str(ignore_names))
+        tf.logging.info("training_names = " + str([t.name for t in trainable_variables]))
 
     var_grads = mtf.gradients(
             [loss*grad_scale], [v.outputs[0] for v in trainable_variables])
@@ -136,7 +142,7 @@ def create_optimizer(loss, base_lr, num_warmup_steps,
     # This is how the model was pre-trained.
     if clip_gradients:
         (var_grads, _) = clip_by_global_norm(
-                var_grads, clip_norm=mtf.constant(mesh, 1.0, dtype=tf.float32))
+                var_grads, clip_norm=mtf.constant(mesh, 0.01, dtype=tf.float32))
 
     update_ops = optimizer.apply_grads(var_grads, trainable_variables, grad_scale)
 

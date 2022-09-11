@@ -1,6 +1,6 @@
 {
   "train_params":{
-    "output_dir":"checkpoints-2.8B",
+    "output_dir":"gs://hogehoge/GPTSAN-checkpoint-3B",
     "batch_size":16,
     "base_lr":1e-4,
     "num_warmup_steps":2000,
@@ -10,10 +10,10 @@
   },
   "model_params":{
     "num_contexts":1280,
-    "num_layers":10,
+    "num_switch_layers":10,
+    "num_ext_layers":14,
     "num_hidden":1024,
     "num_header":16,
-    "use_moe":true,
     "num_experts":16,
     "num_pallarelizm":8
   }
