@@ -149,5 +149,3 @@ GPU上では「--use_mixed_precision」オプションで、float16とGradientSc
 ```sh
 $ python run_training.py --input_files '*.tfrecord' --ignore_parameters GPTSAN-finetune-3B/ignore-params.json --parameter_file GPTSAN-finetune-3B/parameters.json --use_mixed_precision
 ```
-
-GCPのサービスアカウントに、TPUのアカウントがあるので、事前にバケットへのアクセス権を設定しておく必要があります。それには[Google Cloud TPUのドキュメント](https://cloud.google.com/tpu/docs/)を参考に、アクセス権限のIAMを作成します。
