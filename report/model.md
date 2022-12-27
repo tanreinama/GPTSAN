@@ -42,7 +42,7 @@ GPTSANのプログラムは、モデル中の任意のトークン位置にあ�
 
 ![model](../report/languagemodel.png)
 
-それには、「run_languagemodel.py」に「--pos_vector」オプションでトークン位置を、「--output」オプションで出力フィアルを指定し、「run_languagemodel.py」を実行します。
+それには、「run_languagemodel.py」に「--pos_vector」オプションでトークン位置を、「--output」オプションで出力ファイルを指定し、「run_languagemodel.py」を実行します。
 
 ```sh
 $ python run_languagemodel.py --model GPTSAN-2.8B-spout_is_uniform/ --context "武田信玄は、戦国時代ファンならぜひ押さえておきたい名将の一人。天下統一を目指し勢いに乗る織田 信長からも、一目置かれていたと伝わっています。" --pos_vector 25 --output out.json
