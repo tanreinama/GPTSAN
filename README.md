@@ -5,7 +5,7 @@
 
 # GPTSANとは
 
-なんにでも使える汎用日本語言語モデルを目指して作成したSwich Transformerモデルです。
+なんにでも使える汎用日本語言語モデルを目指して作成したSwitch Transformerモデルです。
 
 特徴として、[1-GPUでファインチューニング可能](report/finetune.md#gpu)だったり、[生成文章のクラスを指定可能](report/finetune.md#sqout)だったりします。
 
@@ -19,6 +19,16 @@
 
 ```sh
 $ tar xfj GPTSAN-2.8B-spout_is_uniform.tar.bz2
+```
+
+# Dockerで使ってみる
+
+標準環境の構築。
+
+```sh
+$ docker build .
+ビルド後にコンテナIDが表示される
+$ docker run --gpus all -it --rm -v GPTSAN-2.8B-spout_is_uniform:/tf/GPTSAN/GPTSAN-2.8B-spout_is_uniform <コンテナID> python run_generate.py --model GPTSAN-2.8B-spout_is_uniform/ --context "武田信玄は、戦国 時代ファンならぜひ押さえておきたい名将の一人。天下統一を目指し勢いに乗る織田信長からも、一目置かれていたと"
 ```
 
 # とりあえず使ってみる
