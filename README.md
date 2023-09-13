@@ -15,7 +15,7 @@
 
 現在、28億パラメーター（10layer-1024ch-16header-16experts-1280contexts）のモデルが公開されています。
 
-[こちら](https://drive.google.com/drive/folders/1ci17cB4StbXTAmiJ2VaN8hHIqU3Aj2Y8)のGoogle Driveフォルダから、モデルをダウンロードし、以下のコマンドで解凍します。
+[こちら](https://drive.google.com/file/d/1Maq_EZNOnzKDiWpDACT3zXbzsmnvJ9BG/view?usp=sharing)のGoogle Driveフォルダから、モデルをダウンロードし、以下のコマンドで解凍します。
 
 ```sh
 $ tar xfj GPTSAN-2.8B-spout_is_uniform.tar.bz2
